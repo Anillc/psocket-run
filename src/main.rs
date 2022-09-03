@@ -1,27 +1,40 @@
-use std::ffi::{CString, CStr};
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus, WaitPidFlag};
 use nix::sys::ptrace;
-use nix::unistd::{fork, ForkResult, execvp, Pid};
+use nix::unistd::{ForkResult, Pid, fork};
+
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+struct Args {
+    fwmark: String,
+    #[clap(default_value = "bash")]
+    command: String,
+}
 
 const WALL: Option<WaitPidFlag> = Some(WaitPidFlag::__WALL);
 
 fn main() {
+    let args = Args::parse();
+    let fwmark = u32::from_str_radix(&args.fwmark.trim_start_matches("0x"), 16)
+        .expect("invaild fwmark");
     match unsafe { fork() } {
-        Ok(ForkResult::Child) => child(),
-        Ok(ForkResult::Parent { child }) => parent(child),
+        Ok(ForkResult::Child) => child(args.command),
+        Ok(ForkResult::Parent { child }) => parent(child, fwmark),
         Err(err) => panic!("error {}", err),
     }
 }
 
-fn handle_syscall(pid: Pid) {
+fn handle_syscall(pid: Pid, fwmark: u32) {
     if let Ok(regs) = ptrace::getregs(pid) {
         let socket = regs.rax as i32;
         if regs.orig_rax != libc::SYS_socket as u64 || socket < 0 {
             return
         }
-        let mark = &0x66CCFF as *const i32 as *const libc::c_void;
+        let mark = &fwmark as *const u32 as *const libc::c_void;
         unsafe {
             let pidfd = libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) as i32;
             if pidfd < 0 { return }
@@ -32,12 +45,12 @@ fn handle_syscall(pid: Pid) {
     }
 }
 
-fn child() {
+fn child(command: String) {
     ptrace::traceme().unwrap();
-    execvp(CString::new("bash").unwrap().as_c_str(), &[] as &[&CStr; 0]).unwrap();
+    Command::new("/bin/sh").args(["-c", command.as_str()]).exec();
 }
 
-fn parent(child: Pid) {
+fn parent(child: Pid, fwmark: u32) {
     waitpid(child, WALL).unwrap();
     let options =
           ptrace::Options::PTRACE_O_TRACESYSGOOD
@@ -55,7 +68,7 @@ fn parent(child: Pid) {
         let pid = status.pid().unwrap();
         let mut signal: Option<Signal> = None;
         match status {
-            WaitStatus::PtraceSyscall(_) => handle_syscall(pid),
+            WaitStatus::PtraceSyscall(_) => handle_syscall(pid, fwmark),
             WaitStatus::Exited(_, _) | WaitStatus::Signaled(_, _, _) => {
                 if pid == child { break; } else { continue; }
             },
