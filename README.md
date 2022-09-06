@@ -7,10 +7,10 @@ This program can set fwmark and bind socket to random source.
 usage:
 
 ```bash
-pfwmark-run 
+psocket-run 
 
 USAGE:
-    pfwmark-run [OPTIONS] [COMMAND]
+    psocket-run [OPTIONS] [COMMAND]
 
 ARGS:
     <COMMAND>    [default: bash]

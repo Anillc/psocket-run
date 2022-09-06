@@ -160,17 +160,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ff7415e9ae3fff1225851df9e0d9e4e5479f947619774677a63572e55e80eff"
 
 [[package]]
-name = "pfwmark-run"
-version = "0.1.0"
-dependencies = [
- "cidr",
- "clap",
- "libc",
- "nix",
- "rand",
-]
-
-[[package]]
 name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -213,6 +202,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a2ca2c61bc9f3d74d2886294ab7b9853abd9c1ad903a3ac7815c58989bb7bab"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "psocket-run"
+version = "0.1.0"
+dependencies = [
+ "cidr",
+ "clap",
+ "libc",
+ "nix",
+ "rand",
 ]
 
 [[package]]

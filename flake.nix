@@ -6,9 +6,9 @@
     pkgs = import nixpkgs { inherit system; };
   in {
     packages.default = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
-      name = "pfwmark-run";
+      name = "psocket-run";
       src = ./.;
-      cargoSha256 = "sha256-sMHwludtMvxjLBRELN8rCodEFuGAZxrXK2qtymzgTuY=";
+      cargoSha256 = "sha256-UMIdxYv/FSo8mIEmc87cTPnGw0AR7oJOsiFekn7zA1w=";
     };
   });
 }
