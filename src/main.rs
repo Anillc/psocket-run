@@ -38,14 +38,21 @@ impl Psocket<'_> {
     fn handle_syscall(&mut self, pid: Pid) {
         if let Ok(regs) = ptrace::getregs(pid) {
             let socket = regs.rax as i32;
+            // avoid call `bind` multi times
+            if self.cidr.is_some() && regs.orig_rax == libc::SYS_bind as u64 {
+                let mut new_regs = regs.to_owned();
+                new_regs.rax = 0;
+                ptrace::setregs(pid, new_regs).unwrap();
+                return;
+            }
             if regs.orig_rax != libc::SYS_socket as u64 || socket < 0 {
-                return
+                return;
             }
             unsafe {
                 let pidfd = libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) as i32;
-                if pidfd < 0 { return }
+                if pidfd < 0 { return; }
                 let pfd = libc::syscall(libc::SYS_pidfd_getfd, pidfd, socket, 0) as i32;
-                if pfd < 0 { return }
+                if pfd < 0 { return; }
                 if let Some(fwmark) = self.fwmark {
                     let mark = &fwmark as *const u32 as *const libc::c_void;
                     libc::setsockopt(pfd, libc::SOL_SOCKET, libc::SO_MARK, mark, size_of::<u32>() as u32);
