@@ -1,11 +1,22 @@
-# pfwmark-run
+# psocket-run
 
-The ptrace version of [fwmark-run](https://github.com/KusakabeShi/fwmark-run).
+Trace the socket syscall and do something.
 
-Set mark for every socket opened by command.
+This program can set fwmark and bind socket to random source.
 
 usage:
 
 ```bash
-pfwmark-run <FWMARK> [COMMAND]
+pfwmark-run 
+
+USAGE:
+    pfwmark-run [OPTIONS] [COMMAND]
+
+ARGS:
+    <COMMAND>    [default: bash]
+
+OPTIONS:
+    -c, --cidr <CIDR>        
+    -f, --fwmark <FWMARK>    
+    -h, --help               Print help information
 ```
