@@ -16,6 +16,7 @@ ARGS:
     <COMMAND>    [default: bash]
 
 OPTIONS:
+    -a, --attach <ATTACH>    
     -c, --cidr <CIDR>        
     -f, --fwmark <FWMARK>    
     -h, --help               Print help information

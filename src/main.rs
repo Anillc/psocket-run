@@ -23,6 +23,8 @@ struct Args {
     fwmark: Option<String>,
     #[clap(short, long)]
     cidr: Option<String>,
+    #[clap(short, long)]
+    attach: Option<i32>,
     #[clap(default_value = "bash")]
     command: String,
 }
@@ -179,9 +181,15 @@ fn main() {
         rng: &mut rand::thread_rng(),
         sockets: &mut HashMap::new(),
     };
-    match unsafe { fork() } {
-        Ok(ForkResult::Child) => psocket.child(),
-        Ok(ForkResult::Parent { child }) => psocket.parent(child),
-        Err(err) => panic!("error {}", err),
+    if let Some(pid) = args.attach {
+        let pid = Pid::from_raw(pid);
+        ptrace::attach(pid).expect("failed to attach to process");
+        psocket.parent(pid);
+    } else {
+        match unsafe { fork() } {
+            Ok(ForkResult::Child) => psocket.child(),
+            Ok(ForkResult::Parent { child }) => psocket.parent(child),
+            Err(err) => panic!("error {}", err),
+        }
     }
 }
