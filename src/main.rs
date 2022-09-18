@@ -142,7 +142,7 @@ fn random_address((addr, length): &(u128, u8), rng: &mut ThreadRng) -> u128 {
     let right = (128 - length) / 8;
     let left = vec![0; left as usize];
     let right = (0..right)
-        .map(|_| rng.gen_range(0..0xFF))
+        .map(|_| rng.gen())
         .collect::<Vec<u8>>();
     let random: [u8; 16] = [left, right].concat().try_into().unwrap();
     addr | u128::from_be_bytes(random)
