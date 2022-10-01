@@ -22,6 +22,8 @@ pub(crate) struct Psocket<'a> {
     pub(crate) fwmark: Option<u32>,
     pub(crate) cidr: Option<(u128, u8)>,
     pub(crate) proxy: Option<SocketAddrV4>,
+    pub(crate) dont_kill: bool,
+    pub(crate) verbose: bool,
     fwmark_handler: RefCell<Option<FwmarkHandler<'a>>>,
     rsrc_handler: RefCell<Option<RsrcHandler<'a>>>,
     proxy_handler: RefCell<Option<ProxyHandler<'a>>>,
@@ -49,10 +51,12 @@ impl Psocket<'_> {
         command: String,
         fwmark: Option<u32>,
         cidr: Option<(u128, u8)>,
-        proxy: Option<SocketAddrV4>
+        proxy: Option<SocketAddrV4>,
+        dont_kill: bool,
+        verbose: bool,
     ) -> &'static Psocket<'static> {
         let psocket: &'static mut _ = Box::leak(Box::new(Psocket {
-            command, fwmark, cidr, proxy,
+            command, fwmark, cidr, proxy, dont_kill, verbose,
             fwmark_handler: RefCell::new(None),
             rsrc_handler: RefCell::new(None),
             proxy_handler: RefCell::new(None),
@@ -73,7 +77,11 @@ impl Psocket<'_> {
             socket_rax: Lazy::new(Box::new(move || get_fd(pid, rax))),
             socket_rdi: Lazy::new(Box::new(move || get_fd(pid, rdi))),
         };
-        let print_error = |e: PsocketError| { dbg!(e); e };
+        let print_error = if self.verbose {
+            |e: PsocketError| { dbg!(e); e }
+        } else {
+            |e| e
+        };
         self.fwmark_handler.borrow_mut().as_mut().unwrap().handle(&syscall).map_err(print_error).ok();
         self.rsrc_handler.borrow_mut().as_mut().unwrap().handle(&syscall).map_err(print_error).ok();
         self.proxy_handler.borrow_mut().as_mut().unwrap().handle(&syscall).map_err(print_error).ok();
@@ -87,16 +95,17 @@ impl Psocket<'_> {
 
     pub(crate) fn parent(&self, child: Pid) {
         waitpid(child, WALL).unwrap();
-        let options =
+        let mut options =
               ptrace::Options::PTRACE_O_TRACESYSGOOD
-            // TODO: option
-            | ptrace::Options::PTRACE_O_EXITKILL
             | ptrace::Options::PTRACE_O_TRACEEXIT
             | ptrace::Options::PTRACE_O_TRACECLONE
             | ptrace::Options::PTRACE_O_TRACEFORK
             | ptrace::Options::PTRACE_O_TRACEVFORKDONE
             | ptrace::Options::PTRACE_O_TRACEEXEC
             | ptrace::Options::PTRACE_O_TRACEVFORK;
+        if !self.dont_kill {
+            options |= ptrace::Options::PTRACE_O_EXITKILL;
+        }
         ptrace::setoptions(child, options).unwrap();
         ptrace::syscall(child, None).unwrap();
         loop {

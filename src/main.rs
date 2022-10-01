@@ -20,6 +20,10 @@ struct Args {
     attach: Option<i32>,
     #[clap(short, long)]
     proxy: Option<String>,
+    #[clap(short, long)]
+    dont_kill: bool,
+    #[clap(short, long)]
+    verbose: bool,
     #[clap(default_value = "bash")]
     command: String,
 }
@@ -48,7 +52,9 @@ pub fn main() {
         |proxy| Some(proxy.parse().expect("invaild proxy address"))
     );
 
-    let psocket = Psocket::new_leak(args.command, fwmark, cidr, proxy);
+    let psocket = Psocket::new_leak(
+        args.command, fwmark, cidr, proxy, args.dont_kill, args.verbose
+    );
 
     if let Some(pid) = args.attach {
         let pid = Pid::from_raw(pid);
