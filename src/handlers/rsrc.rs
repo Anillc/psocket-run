@@ -2,7 +2,7 @@ use std::{collections::HashMap, mem::size_of};
 use nix::unistd::Pid;
 use rand::rngs::ThreadRng;
 
-use crate::{psocket::{Psocket, SyscallHandler, Syscall}, utils::{random_address, Result}};
+use crate::{psocket::{Psocket, SyscallHandler, Syscall}, utils::{random_address, Result, PsocketError}};
 
 #[derive(Debug)]
 pub(crate) struct RsrcHandler<'a> {
@@ -10,11 +10,21 @@ pub(crate) struct RsrcHandler<'a> {
     // pid, socket fd, pidfd socket fd
     sockets: HashMap<Pid, HashMap<i32, i32>>,
     rng: ThreadRng,
+    socket_enter: bool,
+    close_enter: bool,
+    connect_enter: bool,
 }
 
 impl RsrcHandler<'_> {
     pub(crate) fn new<'a>(psocket: &'a Psocket<'a>) -> RsrcHandler<'a> {
-        RsrcHandler { psocket, sockets: HashMap::new(), rng: rand::thread_rng() }
+        RsrcHandler {
+            psocket,
+            sockets: HashMap::new(),
+            rng: rand::thread_rng(),
+            socket_enter: false,
+            close_enter: false,
+            connect_enter: false,
+        }
     }
 }
 
@@ -33,29 +43,33 @@ impl RsrcHandler<'_> {
 
 impl SyscallHandler for RsrcHandler<'_> {
     unsafe fn handle(&mut self, &Syscall {
-        orig_rax, enter, ref socket, rax, rdi, pid, ..
+        regs, orig_rax, ref socket_rax, rax, pid, ..
     }: &Syscall) -> Result<()> {
+        if self.psocket.cidr.is_none() { return Ok(()); }
+        let cidr = match self.psocket.cidr {
+            Some(cidr) => cidr,
+            None => return Ok(()),
+        };
+        let rdi = regs.rdi as i32;
         match orig_rax {
             libc::SYS_socket => {
-                if enter { return Ok(()); }
-                let pfd = (**socket)?;
-                if rdi == libc::AF_INET6 && self.psocket.cidr.is_some() {
+                self.socket_enter = !self.socket_enter;
+                if self.socket_enter { return Ok(()); }
+                let pfd = (**socket_rax)?;
+                if rdi == libc::AF_INET6 {
                     self.get_sockets(pid).insert(rax, pfd);
-                }
-                if let Some(fwmark) = self.psocket.fwmark {
-                    let mark = &fwmark as *const u32 as *const libc::c_void;
-                    libc::setsockopt(pfd, libc::SOL_SOCKET, libc::SO_MARK, mark, size_of::<u32>() as u32);
                 }
             },
             libc::SYS_close | libc::SYS_bind => {
-                if !enter { return Ok(()); }
+                self.close_enter = !self.close_enter;
+                if self.close_enter { return Ok(()); }
                 self.get_sockets(pid).remove(&rdi);
             },
             libc::SYS_connect => {
-                if !enter || self.psocket.cidr.is_none() { return Ok(()); }
+                self.connect_enter = !self.connect_enter;
+                if !self.connect_enter { return Ok(()); }
                 let fd = self.get_sockets(pid).remove(&rdi);
                 if let Some(fd) = fd {
-                    let cidr = self.psocket.cidr.unwrap();
                     let addr = libc::in6_addr {
                         s6_addr: random_address(&cidr, &mut self.rng).to_be_bytes(),
                     };
@@ -66,8 +80,11 @@ impl SyscallHandler for RsrcHandler<'_> {
                         sin6_addr: addr,
                         sin6_scope_id: 0,
                     };
-                    libc::bind(fd, sockaddr as *const libc::sockaddr, size_of::<libc::sockaddr_in6>() as u32);
-
+                    let ret = libc::bind(
+                        fd, sockaddr as *const libc::sockaddr,
+                        size_of::<libc::sockaddr_in6>() as u32
+                    );
+                    if ret == -1 { return Err(PsocketError::SyscallFailed); }
                 }
             }
             _ => (),

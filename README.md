@@ -4,6 +4,8 @@ Trace the socket syscall and do something.
 
 This program can set fwmark and bind socket to random source.
 
+(Only support x86_64.)
+
 usage:
 
 ```bash

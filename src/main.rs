@@ -1,3 +1,4 @@
+use std::net::SocketAddrV4;
 use std::str::FromStr;
 use nix::sys::ptrace;
 use nix::unistd::{ForkResult, Pid, fork};
@@ -17,6 +18,8 @@ struct Args {
     cidr: Option<String>,
     #[clap(short, long)]
     attach: Option<i32>,
+    #[clap(short, long)]
+    proxy: Option<String>,
     #[clap(default_value = "bash")]
     command: String,
 }
@@ -41,7 +44,11 @@ pub fn main() {
         Some((addr.to_be(), length))
     } else { None };
 
-    let psocket = Psocket::new_leak(args.command, fwmark, cidr);
+    let proxy: Option<SocketAddrV4> = args.proxy.and_then(
+        |proxy| Some(proxy.parse().expect("invaild proxy address"))
+    );
+
+    let psocket = Psocket::new_leak(args.command, fwmark, cidr, proxy);
 
     if let Some(pid) = args.attach {
         let pid = Pid::from_raw(pid);

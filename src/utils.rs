@@ -8,8 +8,6 @@ pub(crate) type Result<T> = std::result::Result<T, PsocketError>;
 pub(crate) enum PsocketError {
     #[error("failled to call syscall")]
     SyscallFailed,
-    #[error("failed to get regs")]
-    GetRegsFailed,
 }
 
 pub(crate) fn get_fd(pid: Pid, raw_fd: i32) -> Result<i32> {
