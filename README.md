@@ -2,17 +2,18 @@
 
 Trace the socket syscall and do something.
 
-This program can set fwmark and bind socket to random source.
+This program can do the following things:
 
-(Only support x86_64.)
+1. set fwmark for socket
+2. bind random source of socket
+3. add http proxy for socket
+
+(Only supports x86_64.)
 
 usage:
 
 ```bash
-psocket-run 
-
-USAGE:
-    psocket-run [OPTIONS] [COMMAND]
+psocket-run [OPTIONS] [COMMAND]
 
 ARGS:
     <COMMAND>    [default: bash]
@@ -22,4 +23,7 @@ OPTIONS:
     -c, --cidr <CIDR>        
     -f, --fwmark <FWMARK>    
     -h, --help               Print help information
+    -n, --no-kill            
+    -p, --proxy <PROXY>      
+    -v, --verbose            
 ```
