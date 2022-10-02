@@ -8,7 +8,7 @@
     packages.default = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
       name = "psocket-run";
       src = ./.;
-      cargoSha256 = "sha256-HOSQlylOX8y6MYGkPtqHjmL/HLNtgcqfxk9oBA3ZHJI=";
+      cargoSha256 = "sha256-OosQdGJzXszF4VSgV5bYtve/+qtqHtvFlWnxfY9q/sk=";
     };
   });
 }

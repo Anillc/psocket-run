@@ -1,6 +1,9 @@
 use std::fs::{File, read_dir};
 use std::io::{BufReader, BufRead};
+use std::num::NonZeroUsize;
+use lru::LruCache;
 use nix::unistd::Pid;
+use once_cell::sync::OnceCell;
 use rand::{rngs::ThreadRng, Rng};
 use thiserror::Error;
 
@@ -12,6 +15,8 @@ pub(crate) enum PsocketError {
     SyscallFailed,
     #[error("failed to read file")]
     ReadFailed,
+    #[error("failed to find pid")]
+    PidNotFound,
 }
 
 #[derive(Debug)]
@@ -51,7 +56,24 @@ pub(crate) fn random_address((addr, length): &(u128, u8), rng: &mut ThreadRng) -
     addr | u128::from_be_bytes(random)
 }
 
+fn get_pid_lru() -> &'static mut LruCache<i32, i32> {
+    static mut INSTANCE: OnceCell<LruCache<i32, i32>> = OnceCell::new();
+    unsafe {
+        match INSTANCE.get_mut() {
+            Some(lru) => lru,
+            None => {
+                INSTANCE.set(LruCache::new(NonZeroUsize::new(100).unwrap())).unwrap();
+                INSTANCE.get_mut().unwrap()
+            },
+        }
+    }
+}
+
 pub(crate) fn get_pid_from_tid(tid: i32) -> Result<i32> {
+    let lru = get_pid_lru();
+    if let Some(pid) = lru.get(&tid) {
+        return Ok(*pid);
+    }
     let task = find_task(tid).ok_or(PsocketError::ReadFailed)?;
     let status_file = File::open(task)
         .map_err(|_| PsocketError::ReadFailed)?;
@@ -63,7 +85,13 @@ pub(crate) fn get_pid_from_tid(tid: i32) -> Result<i32> {
             pid = Some(str::parse(&pid_str).unwrap())
         }
     }
-    Ok(pid.unwrap())
+    if pid == None {
+        Err(PsocketError::PidNotFound)
+    } else {
+        let pid = pid.unwrap();
+        lru.put(tid, pid);
+        Ok(pid)
+    }
 }
 
 pub(crate) fn find_task(tid: i32) -> Option<String> {
