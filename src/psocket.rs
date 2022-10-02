@@ -14,7 +14,7 @@ use once_cell::sync::Lazy;
 use crate::handlers::fwmark::FwmarkHandler;
 use crate::handlers::proxy::ProxyHandler;
 use crate::handlers::rsrc::RsrcHandler;
-use crate::utils::{get_fd, Result, PsocketError};
+use crate::utils::{get_fd, Result, PsocketError, Pidfd};
 
 #[derive(Debug)]
 pub(crate) struct Psocket<'a> {
@@ -22,7 +22,7 @@ pub(crate) struct Psocket<'a> {
     pub(crate) fwmark: Option<u32>,
     pub(crate) cidr: Option<(u128, u8)>,
     pub(crate) proxy: Option<SocketAddrV4>,
-    pub(crate) dont_kill: bool,
+    pub(crate) no_kill: bool,
     pub(crate) verbose: bool,
     fwmark_handler: RefCell<Option<FwmarkHandler<'a>>>,
     rsrc_handler: RefCell<Option<RsrcHandler<'a>>>,
@@ -35,8 +35,8 @@ pub(crate) struct Syscall {
     pub(crate) regs: user_regs_struct,
     pub(crate) orig_rax: i64,
     pub(crate) rax: i32,
-    pub(crate) socket_rax: Lazy<Result<i32>, Box<dyn FnOnce() -> Result<i32>>>,
-    pub(crate) socket_rdi: Lazy<Result<i32>, Box<dyn FnOnce() -> Result<i32>>>,
+    pub(crate) socket_rax: Lazy<Result<Pidfd>, Box<dyn FnOnce() -> Result<Pidfd>>>,
+    pub(crate) socket_rdi: Lazy<Result<Pidfd>, Box<dyn FnOnce() -> Result<Pidfd>>>,
 }
 
 pub(crate) trait SyscallHandler {
@@ -52,11 +52,11 @@ impl Psocket<'_> {
         fwmark: Option<u32>,
         cidr: Option<(u128, u8)>,
         proxy: Option<SocketAddrV4>,
-        dont_kill: bool,
+        no_kill: bool,
         verbose: bool,
     ) -> &'static Psocket<'static> {
         let psocket: &'static mut _ = Box::leak(Box::new(Psocket {
-            command, fwmark, cidr, proxy, dont_kill, verbose,
+            command, fwmark, cidr, proxy, no_kill, verbose,
             fwmark_handler: RefCell::new(None),
             rsrc_handler: RefCell::new(None),
             proxy_handler: RefCell::new(None),
@@ -103,7 +103,7 @@ impl Psocket<'_> {
             | ptrace::Options::PTRACE_O_TRACEVFORKDONE
             | ptrace::Options::PTRACE_O_TRACEEXEC
             | ptrace::Options::PTRACE_O_TRACEVFORK;
-        if !self.dont_kill {
+        if !self.no_kill {
             options |= ptrace::Options::PTRACE_O_EXITKILL;
         }
         ptrace::setoptions(child, options).unwrap();

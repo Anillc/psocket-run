@@ -29,11 +29,17 @@ impl SyscallHandler for ProxyHandler<'_> {
             libc::SYS_connect | i64::MAX if orig_rax != i64::MAX || self.connect_enter => {
                 self.connect_enter = !self.connect_enter;
                 let orig_sockaddr: libc::sockaddr_in = read_struct(pid, regs.rsi)?;
+                // if orig_sockaddr.sin_family as i32 == libc::AF_INET6 {
+                //     let mut regs = regs.clone();
+                //     regs.orig_rax = i32::MAX as u64;
+                //     ptrace::setregs(pid, regs).ok();
+                //     return Ok(());
+                // }
                 if orig_sockaddr.sin_family as i32 != libc::AF_INET {
                     return Ok(());
                 }
 
-                let pfd = (**socket_rdi)?;
+                let pfd = socket_rdi.as_ref().map_err(|e| *e)?.fd;
                 let mut socket_type: u32 = std::mem::zeroed();
                 let ret = libc::getsockopt(
                     pfd, libc::SOL_SOCKET, libc::SO_TYPE,
@@ -90,8 +96,12 @@ impl SyscallHandler for ProxyHandler<'_> {
                     return Err(PsocketError::SyscallFailed);
                 }
 
-                send_result?
+                send_result?;
             },
+            // TODO
+            // libc::SYS_sendto => {
+            //     // dbg!(456);
+            // },
             _ => (),
         };
         Ok(())

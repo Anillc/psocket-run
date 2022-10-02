@@ -55,7 +55,7 @@ impl SyscallHandler for RsrcHandler<'_> {
             libc::SYS_socket => {
                 self.socket_enter = !self.socket_enter;
                 if self.socket_enter { return Ok(()); }
-                let pfd = (**socket_rax)?;
+                let pfd = socket_rax.as_ref().map_err(|e| *e)?.fd;
                 if rdi == libc::AF_INET6 {
                     self.get_sockets(pid).insert(rax, pfd);
                 }

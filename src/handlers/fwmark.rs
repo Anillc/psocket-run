@@ -23,7 +23,7 @@ impl SyscallHandler for FwmarkHandler<'_> {
         if orig_rax == libc::SYS_socket {
             self.socket_enter = !self.socket_enter;
             if self.socket_enter { return Ok(()); }
-            let pfd = (**socket_rax)?;
+            let pfd = socket_rax.as_ref().map_err(|e| *e)?.fd;
             let mark = &fwmark as *const u32 as *const libc::c_void;
             let ret = libc::setsockopt(
                 pfd, libc::SOL_SOCKET, libc::SO_MARK,
