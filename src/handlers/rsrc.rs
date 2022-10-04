@@ -42,9 +42,9 @@ impl RsrcHandler<'_> {
 }
 
 impl SyscallHandler for RsrcHandler<'_> {
-    unsafe fn handle(&mut self, &Syscall {
-        regs, orig_rax, ref socket_rax, rax, pid, ..
-    }: &Syscall) -> Result<()> {
+    unsafe fn handle(&mut self, &mut Syscall {
+        ref mut regs, orig_rax, ref socket_rax, rax, pid, ..
+    }: &mut Syscall) -> Result<()> {
         if self.psocket.cidr.is_none() { return Ok(()); }
         let cidr = match self.psocket.cidr {
             Some(cidr) => cidr,

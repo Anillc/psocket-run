@@ -1,6 +1,6 @@
-use nix::{sys::ptrace, unistd::Pid, errno::errno};
+use nix::errno::errno;
 
-use crate::{psocket::{Psocket, SyscallHandler, Syscall}, utils::{Result, PsocketError}};
+use crate::{psocket::{Psocket, SyscallHandler, Syscall}, utils::{Result, PsocketError, read_struct}};
 
 #[derive(Debug)]
 pub(crate) struct ProxyHandler<'a> {
@@ -15,9 +15,9 @@ impl ProxyHandler<'_> {
 }
 
 impl SyscallHandler for ProxyHandler<'_> {
-    unsafe fn handle(&mut self, &Syscall {
-        pid, regs, orig_rax, ref socket_rdi, ..
-    }: &Syscall) -> Result<()> {
+    unsafe fn handle(&mut self, &mut Syscall {
+        pid, ref mut regs, orig_rax, ref socket_rdi, ..
+    }: &mut Syscall) -> Result<()> {
         let proxy = match self.psocket.proxy {
             Some(proxy) => proxy,
             None => return Ok(()),
@@ -30,9 +30,7 @@ impl SyscallHandler for ProxyHandler<'_> {
                 self.connect_enter = !self.connect_enter;
                 let orig_sockaddr: libc::sockaddr_in = read_struct(pid, regs.rsi)?;
                 // if orig_sockaddr.sin_family as i32 == libc::AF_INET6 {
-                //     let mut regs = regs.clone();
                 //     regs.orig_rax = i32::MAX as u64;
-                //     ptrace::setregs(pid, regs).ok();
                 //     return Ok(());
                 // }
                 if orig_sockaddr.sin_family as i32 != libc::AF_INET {
@@ -57,10 +55,7 @@ impl SyscallHandler for ProxyHandler<'_> {
 
                 // block before syscall and call connect after syscall
                 if self.connect_enter {
-                    let mut regs = regs.clone();
                     regs.orig_rax = i64::MAX as u64;
-                    ptrace::setregs(pid, regs)
-                        .map_err(|_| PsocketError::SyscallFailed)?;
                     return Ok(());
                 }
 
@@ -71,13 +66,10 @@ impl SyscallHandler for ProxyHandler<'_> {
                     pfd, &sockaddr as *const _ as *const _,
                     std::mem::size_of::<libc::sockaddr_in>() as u32
                 );
-                let mut regs = regs.clone();
                 regs.rax = if ret == 0 { 0 } else {
                     -errno() as u64
                 };
-                ptrace::setregs(pid, regs)
-                    .map_err(|_| PsocketError::SyscallFailed)?;
-                if ret != 0 && errno() != libc::EINPROGRESS {
+                if ret != 0 && errno() != libc::EINPROGRESS && errno() != libc::EALREADY {
                     return Err(PsocketError::SyscallFailed);
                 }
 
@@ -107,20 +99,6 @@ impl SyscallHandler for ProxyHandler<'_> {
         };
         Ok(())
     }
-}
-
-unsafe fn read_struct<T>(pid: Pid, addr: u64) -> Result<T> {
-    let unit_len = std::mem::size_of::<libc::c_long>();
-    let len = std::mem::size_of::<T>() / unit_len + 1;
-    let mut units: Vec<libc::c_long> = vec![0; len];
-    let mut i = 0;
-    while i < len {
-        let read = ptrace::read(pid, (addr + (i * unit_len) as u64) as *mut _)
-            .map_err(|_| PsocketError::SyscallFailed)?;
-        units[i] = read;
-        i += 1;
-    };
-    Ok(std::ptr::read(units.as_slice() as *const _ as *const _))
 }
 
 unsafe fn send_proxy_packets(pfd: i32, sockaddr: libc::sockaddr_in) -> Result<()> {

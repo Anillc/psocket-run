@@ -13,9 +13,9 @@ impl FwmarkHandler<'_> {
 }
 
 impl SyscallHandler for FwmarkHandler<'_> {
-    unsafe fn handle(&mut self, &Syscall {
+    unsafe fn handle(&mut self, &mut Syscall {
         orig_rax, ref socket_rax, ..
-    }: &Syscall) -> Result<()> {
+    }: &mut Syscall) -> Result<()> {
         let fwmark = match self.psocket.fwmark {
             Some(fwmark) => fwmark,
             None => return Ok(()),
