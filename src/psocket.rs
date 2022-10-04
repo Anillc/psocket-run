@@ -120,10 +120,12 @@ impl Psocket<'_> {
         ptrace::syscall(child, None).unwrap();
 
         // pid -> tgid
-        let mut pids: HashMap<Pid, Pid> = HashMap::new();
+        let mut pids: HashMap<Pid, Pid> = HashMap::from([(child, child)]);
         loop {
             let status = waitpid(Some(Pid::from_raw(-1)), WALL).unwrap();
             let pid = status.pid().unwrap();
+            // ptrace event will me emited after clone or clone3 enter
+            // and before exit. Add fallback for this status.
             let tgid = *pids.get(&pid).unwrap_or(&pid);
             let mut signal: Option<Signal> = None;
             match status {
@@ -136,9 +138,13 @@ impl Psocket<'_> {
                     if pid == child { break; } else { continue; }
                 },
                 // TODO: VFORK_DONE
-                | WaitStatus::PtraceEvent(_, _, libc::PTRACE_EVENT_CLONE) => {
-                    let new_pid = ptrace::getevent(pid).unwrap();
-                    pids.insert(Pid::from_raw(new_pid as i32), tgid);
+                | WaitStatus::PtraceEvent(_, _, event@libc::PTRACE_EVENT_FORK)
+                | WaitStatus::PtraceEvent(_, _, event@libc::PTRACE_EVENT_VFORK)
+                | WaitStatus::PtraceEvent(_, _, event@libc::PTRACE_EVENT_CLONE) => {
+                    let new_pid = Pid::from_raw(ptrace::getevent(pid).unwrap() as i32);
+                    // add (new_pid, new_pid) for threads of new process geting its tgid
+                    let tgid = if event == libc::PTRACE_EVENT_CLONE { tgid } else { new_pid };
+                    pids.insert(new_pid, tgid);
                 },
                 WaitStatus::Stopped(_, Signal::SIGSTOP) => (),
                 WaitStatus::Stopped(_, sig) => signal = Some(sig),

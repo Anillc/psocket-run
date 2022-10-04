@@ -68,7 +68,7 @@ pub(crate) unsafe fn write_struct<T>(pid: Pid, addr: u64, t: T) -> Result<()> {
     let mut i = 0;
     while i < len {
         let offset = (i * unit_len) as u64;
-        ptrace::write(pid, (addr + offset) as *mut _, *((t + offset) as *mut _))
+        ptrace::write(pid, (addr + offset) as *mut _, (*((t + offset) as *mut libc::c_long)) as *mut _)
             .map_err(|_| PsocketError::SyscallFailed)?;
         i += 1;
     }
