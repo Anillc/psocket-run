@@ -1,4 +1,4 @@
-use nix::errno::errno;
+use nix::Error;
 
 use crate::{psocket::{Psocket, SyscallHandler, Syscall}, utils::{Result, PsocketError, read_struct}};
 
@@ -67,9 +67,9 @@ impl SyscallHandler for ProxyHandler<'_> {
                     std::mem::size_of::<libc::sockaddr_in>() as u32
                 );
                 regs.rax = if ret == 0 { 0 } else {
-                    -errno() as u64
+                    -Error::last_raw() as u64
                 };
-                if ret != 0 && errno() != libc::EINPROGRESS && errno() != libc::EALREADY {
+                if ret != 0 && Error::last_raw() != libc::EINPROGRESS && Error::last_raw() != libc::EALREADY {
                     return Err(PsocketError::SyscallFailed);
                 }
 

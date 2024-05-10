@@ -1,4 +1,3 @@
-#![feature(hash_drain_filter)]
 use std::net::SocketAddrV4;
 use std::str::FromStr;
 use nix::sys::ptrace;

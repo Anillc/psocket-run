@@ -134,7 +134,7 @@ impl Psocket<'_> {
                 },
                 WaitStatus::Exited(_, _) | WaitStatus::Signaled(_, _, _) => {
                     self.rsrc_handler.borrow_mut().as_mut().unwrap().remove_pid(&pid);
-                    pids.drain_filter(|_, v| *v == pid);
+                    pids.retain(|_, v| *v != pid);
                     if pid == child { break; } else { continue; }
                 },
                 // TODO: VFORK_DONE
