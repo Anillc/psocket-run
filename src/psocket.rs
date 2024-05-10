@@ -100,8 +100,7 @@ impl Psocket {
         loop {
             let status = waitpid(Some(Pid::from_raw(-1)), WALL).unwrap();
             let pid = status.pid().unwrap();
-            // ptrace event will me emited after clone or clone3 enter
-            // and before exit. Add fallback for this status.
+            // ptrace event will be emited after clone or clone3 enter or before exit. Fallback here.
             let tgid = *pids.get(&pid).unwrap_or(&pid);
             let mut signal: Option<Signal> = None;
             match status {
