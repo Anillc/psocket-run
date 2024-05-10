@@ -1,6 +1,5 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::net::SocketAddrV4;
+use std::fmt::Debug;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -17,19 +16,12 @@ use crate::handlers::fwmark::FwmarkHandler;
 use crate::handlers::proxy::ProxyHandler;
 use crate::handlers::rsrc::RsrcHandler;
 use crate::utils::{get_fd, Result, PsocketError, Pidfd};
+use crate::Config;
 
 #[derive(Debug)]
-pub(crate) struct Psocket<'a> {
-    pub(crate) command: String,
-    pub(crate) fwmark: Option<u32>,
-    pub(crate) cidr: Option<(u128, u8)>,
-    pub(crate) proxy: Option<SocketAddrV4>,
-    pub(crate) no_kill: bool,
-    pub(crate) verbose: bool,
-    fwmark_handler: RefCell<Option<FwmarkHandler<'a>>>,
-    rsrc_handler: RefCell<Option<RsrcHandler<'a>>>,
-    proxy_handler: RefCell<Option<ProxyHandler<'a>>>,
-    clone_handler: RefCell<Option<CloneHandler<'a>>>,
+pub(crate) struct Psocket {
+    config: Config,
+    handlers: Vec<Box<dyn SyscallHandler>>,
 }
 
 #[derive(Debug)]
@@ -42,37 +34,28 @@ pub(crate) struct Syscall {
     pub(crate) socket_rdi: Lazy<Result<Pidfd>, Box<dyn FnOnce() -> Result<Pidfd>>>,
 }
 
-pub(crate) trait SyscallHandler {
+pub(crate) trait SyscallHandler: Debug {
     unsafe fn handle(&mut self, syscall: &mut Syscall) -> Result<()>;
+    fn process_exit(&mut self, pid: &Pid);
 }
 
 const WALL: Option<WaitPidFlag> = Some(WaitPidFlag::__WALL);
 
-impl Psocket<'_> {
+impl Psocket {
 
-    pub(crate) fn new_leak(
-        command: String,
-        fwmark: Option<u32>,
-        cidr: Option<(u128, u8)>,
-        proxy: Option<SocketAddrV4>,
-        no_kill: bool,
-        verbose: bool,
-    ) -> &'static Psocket<'static> {
-        let psocket: &'static mut _ = Box::leak(Box::new(Psocket {
-            command, fwmark, cidr, proxy, no_kill, verbose,
-            fwmark_handler: RefCell::new(None),
-            rsrc_handler: RefCell::new(None),
-            proxy_handler: RefCell::new(None),
-            clone_handler: RefCell::new(None),
-        }));
-        *psocket.fwmark_handler.borrow_mut() = Some(FwmarkHandler::new(psocket));
-        *psocket.rsrc_handler.borrow_mut() = Some(RsrcHandler::new(psocket));
-        *psocket.proxy_handler.borrow_mut() = Some(ProxyHandler::new(psocket));
-        *psocket.clone_handler.borrow_mut() = Some(CloneHandler::new(psocket));
-        psocket
+    pub(crate) fn new(config: Config) -> Psocket {
+        Psocket {
+            handlers: vec![
+                Box::new(FwmarkHandler::new(config.clone())),
+                Box::new(RsrcHandler::new(config.clone())),
+                Box::new(ProxyHandler::new(config.clone())),
+                Box::new(CloneHandler::new(config.clone())),
+            ],
+            config,
+        }
     }
 
-    unsafe fn handle_syscall(&self, pid: Pid, tgid: Pid) -> Result<()> {
+    unsafe fn handle_syscall(&mut self, pid: Pid, tgid: Pid) -> Result<()> {
         let regs = ptrace::getregs(pid).map_err(|_| PsocketError::SyscallFailed)?;
         let rax = regs.rax as i32;
         let rdi = regs.rdi as i32;
@@ -82,28 +65,21 @@ impl Psocket<'_> {
             socket_rax: Lazy::new(Box::new(move || get_fd(tgid, rax))),
             socket_rdi: Lazy::new(Box::new(move || get_fd(tgid, rdi))),
         };
-        let print_error = if self.verbose {
-            |e: PsocketError| { dbg!(e); e }
-        } else {
-            |e| e
-        };
-        self.fwmark_handler.borrow_mut().as_mut().unwrap().handle(&mut syscall).map_err(print_error).ok();
-        self.rsrc_handler.borrow_mut().as_mut().unwrap().handle(&mut syscall).map_err(print_error).ok();
-        self.proxy_handler.borrow_mut().as_mut().unwrap().handle(&mut syscall).map_err(print_error).ok();
-        self.clone_handler.borrow_mut().as_mut().unwrap().handle(&mut syscall).map_err(print_error).ok();
+        let success = self.handlers.iter_mut()
+            .map(|handler| handler.handle(&mut syscall))
+            .all(|result| result.is_ok());
         if regs != syscall.regs {
-            ptrace::setregs(syscall.pid, syscall.regs)
-                .map_err(|_| print_error(PsocketError::SyscallFailed)).ok();
+            ptrace::setregs(syscall.pid, syscall.regs).map_err(|_| PsocketError::SyscallFailed)?;
         }
-        Ok(())
+        if success { Ok(()) } else { Err(PsocketError::SyscallFailed) }
     }
 
     pub(crate) fn child(&self) {
         ptrace::traceme().unwrap();
-        Command::new("/bin/sh").args(["-c", self.command.as_str()]).exec();
+        Command::new("/bin/sh").args(["-c", self.config.command.as_str()]).exec();
     }
 
-    pub(crate) fn parent(&self, child: Pid) {
+    pub(crate) fn parent(&mut self, child: Pid) {
         waitpid(child, WALL).unwrap();
         let mut options =
               ptrace::Options::PTRACE_O_TRACESYSGOOD
@@ -113,7 +89,7 @@ impl Psocket<'_> {
             | ptrace::Options::PTRACE_O_TRACEFORK
             | ptrace::Options::PTRACE_O_TRACEVFORK
             | ptrace::Options::PTRACE_O_TRACEVFORKDONE;
-        if !self.no_kill {
+        if !self.config.no_kill {
             options |= ptrace::Options::PTRACE_O_EXITKILL;
         }
         ptrace::setoptions(child, options).unwrap();
@@ -130,10 +106,14 @@ impl Psocket<'_> {
             let mut signal: Option<Signal> = None;
             match status {
                 WaitStatus::PtraceSyscall(_) => {
-                    unsafe { self.handle_syscall(pid, tgid).ok() };
+                    if let Err(err) = unsafe { self.handle_syscall(pid, tgid) } {
+                        if self.config.verbose { dbg!(err); }
+                    }
                 },
                 WaitStatus::Exited(_, _) | WaitStatus::Signaled(_, _, _) => {
-                    self.rsrc_handler.borrow_mut().as_mut().unwrap().remove_pid(&pid);
+                    for handler in &mut self.handlers {
+                        handler.process_exit(&pid);
+                    }
                     pids.retain(|_, v| *v != pid);
                     if pid == child { break; } else { continue; }
                 },

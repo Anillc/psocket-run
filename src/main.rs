@@ -28,6 +28,16 @@ struct Args {
     command: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct Config {
+    pub(crate) command: String,
+    pub(crate) fwmark: Option<u32>,
+    pub(crate) cidr: Option<(u128, u8)>,
+    pub(crate) proxy: Option<SocketAddrV4>,
+    pub(crate) no_kill: bool,
+    pub(crate) verbose: bool,
+}
+
 
 pub fn main() {
     let args = Args::parse();
@@ -52,9 +62,13 @@ pub fn main() {
         |proxy| Some(proxy.parse().expect("invaild proxy address"))
     );
 
-    let psocket = Psocket::new_leak(
-        args.command, fwmark, cidr, proxy, args.no_kill, args.verbose
-    );
+    let config = Config {
+        command: args.command,
+        no_kill: args.no_kill,
+        verbose: args.verbose,
+        fwmark, cidr, proxy,
+    };
+    let mut psocket = Psocket::new(config);
 
     if let Some(pid) = args.attach {
         let pid = Pid::from_raw(pid);

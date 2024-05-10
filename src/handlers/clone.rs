@@ -1,19 +1,20 @@
-use crate::{psocket::{Psocket, Syscall, SyscallHandler}, utils::{Result, read_struct, write_struct}};
+use nix::unistd::Pid;
+
+use crate::{psocket::{Syscall, SyscallHandler}, utils::{read_struct, write_struct, Result}, Config};
 
 #[derive(Debug)]
-pub(crate) struct CloneHandler<'a> {
-    _psocket: &'a Psocket<'a>,
+pub(crate) struct CloneHandler {
     clone_enter: bool,
     clone3_enter: bool,
 }
 
-impl CloneHandler<'_> {
-    pub(crate) fn new<'a>(psocket: &'a Psocket<'a>) -> CloneHandler<'a> {
-        CloneHandler { _psocket: psocket, clone_enter: false, clone3_enter: false }
+impl CloneHandler {
+    pub(crate) fn new<'a>(_config: Config) -> CloneHandler {
+        CloneHandler { clone_enter: false, clone3_enter: false }
     }
 }
 
-impl SyscallHandler for CloneHandler<'_> {
+impl SyscallHandler for CloneHandler {
     unsafe fn handle(&mut self, &mut Syscall {
         ref mut regs, pid, orig_rax, ..
     }: &mut Syscall) -> Result<()> {
@@ -37,4 +38,6 @@ impl SyscallHandler for CloneHandler<'_> {
         }
         Ok(())
     }
+
+    fn process_exit(&mut self, _pid: &Pid) {}
 }

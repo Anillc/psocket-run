@@ -1,22 +1,24 @@
-use crate::{psocket::{Psocket, Syscall, SyscallHandler}, utils::{Result, PsocketError}};
+use nix::unistd::Pid;
+
+use crate::{psocket::{Syscall, SyscallHandler}, utils::{PsocketError, Result}, Config};
 
 #[derive(Debug)]
-pub(crate) struct FwmarkHandler<'a> {
-    psocket: &'a Psocket<'a>,
+pub(crate) struct FwmarkHandler {
+    config: Config,
     socket_enter: bool,
 }
 
-impl FwmarkHandler<'_> {
-    pub(crate) fn new<'a>(psocket: &'a Psocket<'a>) -> FwmarkHandler<'a> {
-        FwmarkHandler { psocket, socket_enter: false }
+impl FwmarkHandler {
+    pub(crate) fn new(config: Config) -> FwmarkHandler {
+        FwmarkHandler { config, socket_enter: false }
     }
 }
 
-impl SyscallHandler for FwmarkHandler<'_> {
+impl SyscallHandler for FwmarkHandler {
     unsafe fn handle(&mut self, &mut Syscall {
         orig_rax, ref socket_rax, ..
     }: &mut Syscall) -> Result<()> {
-        let fwmark = match self.psocket.fwmark {
+        let fwmark = match self.config.fwmark {
             Some(fwmark) => fwmark,
             None => return Ok(()),
         };
@@ -33,4 +35,6 @@ impl SyscallHandler for FwmarkHandler<'_> {
         }
         Ok(())
     }
+
+    fn process_exit(&mut self, _pid: &Pid) {}
 }

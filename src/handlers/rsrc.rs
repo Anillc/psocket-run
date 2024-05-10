@@ -2,11 +2,11 @@ use std::{collections::HashMap, mem::size_of};
 use nix::unistd::Pid;
 use rand::rngs::ThreadRng;
 
-use crate::{psocket::{Psocket, SyscallHandler, Syscall}, utils::{random_address, Result, PsocketError}};
+use crate::{psocket::{Syscall, SyscallHandler}, utils::{random_address, PsocketError, Result}, Config};
 
 #[derive(Debug)]
-pub(crate) struct RsrcHandler<'a> {
-    psocket: &'a Psocket<'a>,
+pub(crate) struct RsrcHandler {
+    config: Config,
     // pid, socket fd, pidfd socket fd
     sockets: HashMap<Pid, HashMap<i32, i32>>,
     rng: ThreadRng,
@@ -15,10 +15,10 @@ pub(crate) struct RsrcHandler<'a> {
     connect_enter: bool,
 }
 
-impl RsrcHandler<'_> {
-    pub(crate) fn new<'a>(psocket: &'a Psocket<'a>) -> RsrcHandler<'a> {
+impl RsrcHandler {
+    pub(crate) fn new(config: Config) -> RsrcHandler {
         RsrcHandler {
-            psocket,
+            config,
             sockets: HashMap::new(),
             rng: rand::thread_rng(),
             socket_enter: false,
@@ -28,25 +28,21 @@ impl RsrcHandler<'_> {
     }
 }
 
-impl RsrcHandler<'_> {
+impl RsrcHandler {
     fn get_sockets(&mut self, pid: Pid) -> &mut HashMap<i32, i32> {
         if !self.sockets.contains_key(&pid) {
             self.sockets.insert(pid, HashMap::new());
         }
         self.sockets.get_mut(&pid).unwrap()
     }
-
-    pub(crate) fn remove_pid(&mut self, pid: &Pid) {
-        self.sockets.remove(pid);
-    }
 }
 
-impl SyscallHandler for RsrcHandler<'_> {
+impl SyscallHandler for RsrcHandler {
     unsafe fn handle(&mut self, &mut Syscall {
         ref mut regs, orig_rax, ref socket_rax, rax, pid, ..
     }: &mut Syscall) -> Result<()> {
-        if self.psocket.cidr.is_none() { return Ok(()); }
-        let cidr = match self.psocket.cidr {
+        if self.config.cidr.is_none() { return Ok(()); }
+        let cidr = match self.config.cidr {
             Some(cidr) => cidr,
             None => return Ok(()),
         };
@@ -90,5 +86,9 @@ impl SyscallHandler for RsrcHandler<'_> {
             _ => (),
         };
         Ok(())
+    }
+
+    fn process_exit(&mut self, pid: &Pid) {
+        self.sockets.remove(pid);
     }
 }

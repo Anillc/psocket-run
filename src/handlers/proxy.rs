@@ -1,24 +1,24 @@
-use nix::Error;
+use nix::{unistd::Pid, Error};
 
-use crate::{psocket::{Psocket, SyscallHandler, Syscall}, utils::{Result, PsocketError, read_struct}};
+use crate::{psocket::{Syscall, SyscallHandler}, utils::{read_struct, PsocketError, Result}, Config};
 
 #[derive(Debug)]
-pub(crate) struct ProxyHandler<'a> {
-    psocket: &'a Psocket<'a>,
+pub(crate) struct ProxyHandler {
+    config: Config,
     connect_enter: bool,
 }
 
-impl ProxyHandler<'_> {
-    pub(crate) fn new<'a>(psocket: &'a Psocket<'a>) -> ProxyHandler {
-        ProxyHandler { psocket, connect_enter: false }
+impl ProxyHandler {
+    pub(crate) fn new(config: Config) -> ProxyHandler {
+        ProxyHandler { config, connect_enter: false }
     }
 }
 
-impl SyscallHandler for ProxyHandler<'_> {
+impl SyscallHandler for ProxyHandler {
     unsafe fn handle(&mut self, &mut Syscall {
         pid, ref mut regs, orig_rax, ref socket_rdi, ..
     }: &mut Syscall) -> Result<()> {
-        let proxy = match self.psocket.proxy {
+        let proxy = match self.config.proxy {
             Some(proxy) => proxy,
             None => return Ok(()),
         };
@@ -99,6 +99,8 @@ impl SyscallHandler for ProxyHandler<'_> {
         };
         Ok(())
     }
+
+    fn process_exit(&mut self, _pid: &Pid) {}
 }
 
 unsafe fn send_proxy_packets(pfd: i32, sockaddr: libc::sockaddr_in) -> Result<()> {
