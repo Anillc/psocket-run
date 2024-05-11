@@ -1,8 +1,7 @@
 use nix::{unistd::Pid, sys::ptrace};
 use rand::{rngs::ThreadRng, Rng};
 use thiserror::Error;
-
-pub(crate) type Result<T> = std::result::Result<T, PsocketError>;
+use anyhow::Result;
 
 #[derive(Debug, Error, Clone, Copy)]
 pub(crate) enum PsocketError {
@@ -29,9 +28,9 @@ impl Drop for Pidfd {
 pub(crate) fn get_fd(pid: Pid, raw_fd: i32) -> Result<Pidfd> {
     unsafe {
         let pidfd = libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32;
-        if pidfd < 0 { return Err(PsocketError::SyscallFailed); }
+        if pidfd < 0 { Err(PsocketError::SyscallFailed)? }
         let fd = libc::syscall(libc::SYS_pidfd_getfd, pidfd, raw_fd, 0) as i32;
-        if fd < 0 { return Err(PsocketError::SyscallFailed); }
+        if fd < 0 { Err(PsocketError::SyscallFailed)? }
         Ok(Pidfd { pidfd, fd })
     }
 }

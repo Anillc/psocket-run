@@ -9,7 +9,7 @@
       inherit system;
       overlays = [ (import rust-overlay) ];
     };
-    rust = pkgs.rust-bin.beta.latest.default;
+    rust = pkgs.rust-bin.nightly.latest.default;
     naersk' = pkgs.callPackage naersk {
       cargo = rust;
       rustc = rust;

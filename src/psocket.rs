@@ -4,18 +4,21 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use libc::user_regs_struct;
+use nix::errno::Errno;
 use nix::sys::signal::Signal;
-use nix::sys::wait::{waitpid, WaitStatus, WaitPidFlag};
+use nix::sys::wait::{wait, waitpid, WaitPidFlag, WaitStatus};
 use nix::sys::ptrace;
 use nix::unistd::Pid;
 
 use once_cell::sync::Lazy;
 
+use anyhow::{Ok, Result};
+
 use crate::handlers::clone::CloneHandler;
 use crate::handlers::fwmark::FwmarkHandler;
 use crate::handlers::proxy::ProxyHandler;
 use crate::handlers::rsrc::RsrcHandler;
-use crate::utils::{get_fd, Result, PsocketError, Pidfd};
+use crate::utils::{get_fd, PsocketError, Pidfd};
 use crate::Config;
 
 #[derive(Debug)]
@@ -24,8 +27,14 @@ pub(crate) struct Psocket {
     handlers: Vec<Box<dyn SyscallHandler>>,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum SyscallType {
+    Enter, Exit
+}
+
 #[derive(Debug)]
 pub(crate) struct Syscall {
+    pub(crate) ty: SyscallType,
     pub(crate) pid: Pid,
     pub(crate) regs: user_regs_struct,
     pub(crate) orig_rax: i64,
@@ -55,23 +64,25 @@ impl Psocket {
         }
     }
 
-    unsafe fn handle_syscall(&mut self, pid: Pid, tgid: Pid) -> Result<()> {
-        let regs = ptrace::getregs(pid).map_err(|_| PsocketError::SyscallFailed)?;
+    unsafe fn handle_syscall(&mut self, pid: Pid, ty: SyscallType) -> Result<()> {
+        let regs = ptrace::getregs(pid)?;
         let rax = regs.rax as i32;
         let rdi = regs.rdi as i32;
         let mut syscall = Syscall {
-            pid, regs, rax,
+            ty, pid, regs, rax,
             orig_rax: regs.orig_rax as i64,
-            socket_rax: Lazy::new(Box::new(move || get_fd(tgid, rax))),
-            socket_rdi: Lazy::new(Box::new(move || get_fd(tgid, rdi))),
+            // TODO: get tgid
+            socket_rax: Lazy::new(Box::new(move || get_fd(pid, rax))),
+            socket_rdi: Lazy::new(Box::new(move || get_fd(pid, rdi))),
         };
-        let success = self.handlers.iter_mut()
+        let results = self.handlers.iter_mut()
             .map(|handler| handler.handle(&mut syscall))
-            .all(|result| result.is_ok());
+            .fold(Ok(()), |result, x| result.and(x));
         if regs != syscall.regs {
             ptrace::setregs(syscall.pid, syscall.regs).map_err(|_| PsocketError::SyscallFailed)?;
         }
-        if success { Ok(()) } else { Err(PsocketError::SyscallFailed) }
+        results?;
+        Ok(())
     }
 
     pub(crate) fn child(&self) {
@@ -79,57 +90,50 @@ impl Psocket {
         Command::new("/bin/sh").args(["-c", self.config.command.as_str()]).exec();
     }
 
-    pub(crate) fn parent(&mut self, child: Pid) {
-        waitpid(child, WALL).unwrap();
+    pub(crate) fn parent(&mut self, child: Pid) -> Result<()> {
+        wait()?;
         let mut options =
               ptrace::Options::PTRACE_O_TRACESYSGOOD
             | ptrace::Options::PTRACE_O_TRACEEXIT
             | ptrace::Options::PTRACE_O_TRACEEXEC
             | ptrace::Options::PTRACE_O_TRACECLONE
             | ptrace::Options::PTRACE_O_TRACEFORK
-            | ptrace::Options::PTRACE_O_TRACEVFORK
-            | ptrace::Options::PTRACE_O_TRACEVFORKDONE;
+            | ptrace::Options::PTRACE_O_TRACEVFORK;
         if !self.config.no_kill {
             options |= ptrace::Options::PTRACE_O_EXITKILL;
         }
-        ptrace::setoptions(child, options).unwrap();
-        ptrace::syscall(child, None).unwrap();
+        ptrace::setoptions(child, options)?;
+        ptrace::syscall(child, None)?;
 
-        // pid -> tgid
-        let mut pids: HashMap<Pid, Pid> = HashMap::from([(child, child)]);
         loop {
-            let status = waitpid(Some(Pid::from_raw(-1)), WALL).unwrap();
-            let pid = status.pid().unwrap();
-            // ptrace event will be emited after clone or clone3 enter or before exit. Fallback here.
-            let tgid = *pids.get(&pid).unwrap_or(&pid);
-            let mut signal: Option<Signal> = None;
-            match status {
-                WaitStatus::PtraceSyscall(_) => {
-                    if let Err(err) = unsafe { self.handle_syscall(pid, tgid) } {
-                        if self.config.verbose { dbg!(err); }
-                    }
-                },
-                WaitStatus::Exited(_, _) | WaitStatus::Signaled(_, _, _) => {
-                    for handler in &mut self.handlers {
-                        handler.process_exit(&pid);
-                    }
-                    pids.retain(|_, v| *v != pid);
-                    if pid == child { break; } else { continue; }
-                },
-                // TODO: VFORK_DONE
-                | WaitStatus::PtraceEvent(_, _, event@libc::PTRACE_EVENT_FORK)
-                | WaitStatus::PtraceEvent(_, _, event@libc::PTRACE_EVENT_VFORK)
-                | WaitStatus::PtraceEvent(_, _, event@libc::PTRACE_EVENT_CLONE) => {
-                    let new_pid = Pid::from_raw(ptrace::getevent(pid).unwrap() as i32);
-                    // add (new_pid, new_pid) for threads of new process geting its tgid
-                    let tgid = if event == libc::PTRACE_EVENT_CLONE { tgid } else { new_pid };
-                    pids.insert(new_pid, tgid);
-                },
-                WaitStatus::Stopped(_, Signal::SIGSTOP) => (),
-                WaitStatus::Stopped(_, sig) => signal = Some(sig),
-                _ => (),
+            let status = match wait() {
+                std::result::Result::Ok(status) => status,
+                // child process died
+                std::result::Result::Err(_) => break,
             };
-            ptrace::syscall(pid, signal).ok();
+            match status {
+                WaitStatus::Stopped(pid, Signal::SIGTRAP | Signal::SIGSTOP) => ptrace::syscall(pid, None)?,
+                WaitStatus::Stopped(pid, sig) => ptrace::syscall(pid, sig)?,
+                WaitStatus::Exited(pid, _) => if pid == child { break; },
+                WaitStatus::PtraceEvent(pid, sig, _) => ptrace::syscall(pid, sig)?,
+                WaitStatus::Signaled(_, _, _) => break,
+                WaitStatus::Continued(_) | WaitStatus::StillAlive => (),
+                WaitStatus::PtraceSyscall(pid) => {
+                    let event = ptrace::getevent(pid)? as u8;
+                    let ty = match event {
+                        libc::PTRACE_SYSCALL_INFO_ENTRY => SyscallType::Enter,
+                        libc::PTRACE_SYSCALL_INFO_EXIT => SyscallType::Exit,
+                        _ => Err(PsocketError::SyscallFailed)?,
+                    };
+                    unsafe {
+                        if let Err(error) = self.handle_syscall(pid,  ty) {
+                            if self.config.verbose { dbg!(error); }
+                        }
+                    };
+                    ptrace::syscall(pid, None)?;
+                },
+            };
         }
+        Ok(())
     }
 }

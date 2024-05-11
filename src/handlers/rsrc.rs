@@ -1,8 +1,9 @@
 use std::{collections::HashMap, mem::size_of};
 use nix::unistd::Pid;
 use rand::rngs::ThreadRng;
+use anyhow::Result;
 
-use crate::{psocket::{Syscall, SyscallHandler}, utils::{random_address, PsocketError, Result}, Config};
+use crate::{psocket::{Syscall, SyscallHandler}, utils::{random_address, PsocketError}, Config};
 
 #[derive(Debug)]
 pub(crate) struct RsrcHandler {
@@ -51,7 +52,7 @@ impl SyscallHandler for RsrcHandler {
             libc::SYS_socket => {
                 self.socket_enter = !self.socket_enter;
                 if self.socket_enter { return Ok(()); }
-                let pfd = socket_rax.as_ref().map_err(|e| *e)?.fd;
+                let pfd = socket_rax.as_ref().map_err(|_| PsocketError::SyscallFailed)?.fd;
                 if rdi == libc::AF_INET6 {
                     self.get_sockets(pid).insert(rax, pfd);
                 }
@@ -80,7 +81,7 @@ impl SyscallHandler for RsrcHandler {
                         fd, sockaddr as *const libc::sockaddr,
                         size_of::<libc::sockaddr_in6>() as u32
                     );
-                    if ret == -1 { return Err(PsocketError::SyscallFailed); }
+                    if ret == -1 { Err(PsocketError::SyscallFailed)?; }
                 }
             }
             _ => (),

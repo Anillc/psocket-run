@@ -1,3 +1,5 @@
+#![feature(try_blocks)]
+
 use std::net::SocketAddrV4;
 use std::str::FromStr;
 use nix::sys::ptrace;
@@ -73,11 +75,13 @@ pub fn main() {
     if let Some(pid) = args.attach {
         let pid = Pid::from_raw(pid);
         ptrace::attach(pid).expect("failed to attach to process");
-        psocket.parent(pid);
+        // TODO
+        psocket.parent(pid).unwrap();
     } else {
         match unsafe { fork() } {
             Ok(ForkResult::Child) => psocket.child(),
-            Ok(ForkResult::Parent { child }) => psocket.parent(child),
+            // TODO
+            Ok(ForkResult::Parent { child }) => psocket.parent(child).unwrap(),
             Err(err) => panic!("error {}", err),
         }
     }

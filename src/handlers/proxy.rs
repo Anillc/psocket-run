@@ -1,6 +1,8 @@
 use nix::{unistd::Pid, Error};
 
-use crate::{psocket::{Syscall, SyscallHandler}, utils::{read_struct, PsocketError, Result}, Config};
+use anyhow::Result;
+
+use crate::{psocket::{Syscall, SyscallHandler}, utils::{read_struct, PsocketError}, Config};
 
 #[derive(Debug)]
 pub(crate) struct ProxyHandler {
@@ -37,7 +39,7 @@ impl SyscallHandler for ProxyHandler {
                     return Ok(());
                 }
 
-                let pfd = socket_rdi.as_ref().map_err(|e| *e)?.fd;
+                let pfd = socket_rdi.as_ref().map_err(|_| PsocketError::SyscallFailed)?.fd;
                 let mut socket_type: u32 = std::mem::zeroed();
                 let ret = libc::getsockopt(
                     pfd, libc::SOL_SOCKET, libc::SO_TYPE,
@@ -45,7 +47,7 @@ impl SyscallHandler for ProxyHandler {
                     &mut std::mem::size_of::<u32>() as *mut _ as *mut _,
                 );
                 if ret == -1 {
-                    return Err(PsocketError::SyscallFailed);
+                    Err(PsocketError::SyscallFailed)?;
                 }
                 // tcp
                 // udp won't call connect
@@ -70,14 +72,14 @@ impl SyscallHandler for ProxyHandler {
                     -Error::last_raw() as u64
                 };
                 if ret != 0 && Error::last_raw() != libc::EINPROGRESS && Error::last_raw() != libc::EALREADY {
-                    return Err(PsocketError::SyscallFailed);
+                    Err(PsocketError::SyscallFailed)?;
                 }
 
                 let flags = libc::fcntl(pfd, libc::F_GETFL, 0);
                 if flags & libc::O_NONBLOCK != 0 {
                     let ret = libc::fcntl(pfd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
                     if ret != 0 {
-                        return Err(PsocketError::SyscallFailed);
+                        Err(PsocketError::SyscallFailed)?;
                     }
                 }
 
@@ -85,7 +87,7 @@ impl SyscallHandler for ProxyHandler {
 
                 let ret = libc::fcntl(pfd, libc::F_SETFL, flags);
                 if ret != 0 {
-                    return Err(PsocketError::SyscallFailed);
+                    Err(PsocketError::SyscallFailed)?;
                 }
 
                 // TODO
@@ -112,7 +114,7 @@ unsafe fn send_proxy_packets(pfd: i32, sockaddr: libc::sockaddr_in) -> Result<()
     let len = bytes.len();
     let ret = libc::send(pfd, bytes as *const _ as *const _, len, 0);
     if ret != len as isize {
-        return Err(PsocketError::SyscallFailed);
+        Err(PsocketError::SyscallFailed)?;
     }
 
     let mut recv: Vec<u8> = vec![];
@@ -120,7 +122,7 @@ unsafe fn send_proxy_packets(pfd: i32, sockaddr: libc::sockaddr_in) -> Result<()
         let mut byte = 0;
         let read = libc::read(pfd, &mut byte as *mut _ as *mut _, 1);
         if read != 1 {
-            return Err(PsocketError::SyscallFailed);
+            Err(PsocketError::SyscallFailed)?;
         }
         recv.push(byte);
         if recv.len() >= 4 && recv.ends_with(&[
@@ -132,7 +134,7 @@ unsafe fn send_proxy_packets(pfd: i32, sockaddr: libc::sockaddr_in) -> Result<()
     }
 
     if recv[9..12] != ['2' as u8, '0' as u8, '0' as u8] {
-        return Err(PsocketError::SyscallFailed);
+        Err(PsocketError::SyscallFailed)?;
     }
 
     Ok(())
