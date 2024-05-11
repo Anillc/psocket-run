@@ -75,12 +75,10 @@ pub fn main() {
     if let Some(pid) = args.attach {
         let pid = Pid::from_raw(pid);
         ptrace::attach(pid).expect("failed to attach to process");
-        // TODO
         psocket.parent(pid).unwrap();
     } else {
         match unsafe { fork() } {
             Ok(ForkResult::Child) => psocket.child(),
-            // TODO
             Ok(ForkResult::Parent { child }) => psocket.parent(child).unwrap(),
             Err(err) => panic!("error {}", err),
         }
