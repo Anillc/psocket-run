@@ -2,23 +2,23 @@ use nix::{unistd::Pid, Error};
 
 use anyhow::Result;
 
-use crate::{psocket::{Syscall, SyscallHandler}, utils::{read_struct, PsocketError}, Config};
+use crate::{psocket::{Syscall, SyscallHandler, SyscallType}, utils::{get_fd, read_struct, Pidfd, PsocketError}, Config};
 
 #[derive(Debug)]
 pub(crate) struct ProxyHandler {
     config: Config,
-    connect_enter: bool,
+    entered: Option<(Pidfd, libc::sockaddr_in)>,
 }
 
 impl ProxyHandler {
     pub(crate) fn new(config: Config) -> ProxyHandler {
-        ProxyHandler { config, connect_enter: false }
+        ProxyHandler { config, entered: None }
     }
 }
 
 impl SyscallHandler for ProxyHandler {
     unsafe fn handle(&mut self, &mut Syscall {
-        pid, ref mut regs, orig_rax, ref socket_rdi, ..
+        ty, pid, ref mut regs, orig_rax, ..
     }: &mut Syscall) -> Result<()> {
         let proxy = match self.config.proxy {
             Some(proxy) => proxy,
@@ -27,45 +27,45 @@ impl SyscallHandler for ProxyHandler {
         let proxy_addr: u32 = std::mem::transmute(*proxy.ip());
         let proxy_port = proxy.port();
         match orig_rax {
-            // right now enter is !connect_enter
-            libc::SYS_connect | i64::MAX if orig_rax != i64::MAX || self.connect_enter => {
-                self.connect_enter = !self.connect_enter;
+            libc::SYS_connect => {
+                if let SyscallType::Exit = ty {
+                    self.entered = None;
+                    return Ok(())
+                }
+
                 let orig_sockaddr: libc::sockaddr_in = read_struct(pid, regs.rsi)?;
-                // if orig_sockaddr.sin_family as i32 == libc::AF_INET6 {
-                //     regs.orig_rax = i32::MAX as u64;
-                //     return Ok(());
-                // }
                 if orig_sockaddr.sin_family as i32 != libc::AF_INET {
                     return Ok(());
                 }
 
-                let pfd = socket_rdi.as_ref().map_err(|_| PsocketError::SyscallFailed)?.fd;
+                let pfd = get_fd(pid, regs.rdi as i32)?;
                 let mut socket_type: u32 = std::mem::zeroed();
                 let ret = libc::getsockopt(
-                    pfd, libc::SOL_SOCKET, libc::SO_TYPE,
+                    pfd.fd, libc::SOL_SOCKET, libc::SO_TYPE,
                     &mut socket_type as *mut _ as *mut _,
                     &mut std::mem::size_of::<u32>() as *mut _ as *mut _,
                 );
                 if ret == -1 {
                     Err(PsocketError::SyscallFailed)?;
                 }
-                // tcp
+                // process tcp
                 // udp won't call connect
                 if socket_type as i32 != libc::SOCK_STREAM {
                     return Ok(());
                 }
 
-                // block before syscall and call connect after syscall
-                if self.connect_enter {
-                    regs.orig_rax = i64::MAX as u64;
-                    return Ok(());
-                }
+                // cancel origin connect
+                regs.orig_rax = i64::MAX as u64;
+                self.entered = Some((pfd, orig_sockaddr))
+            },
+            i64::MAX if self.entered.is_some() => {
+                let (pfd, orig_sockaddr) = std::mem::replace(&mut self.entered, None).unwrap();
 
                 let mut sockaddr = orig_sockaddr.clone();
                 sockaddr.sin_addr = libc::in_addr { s_addr: proxy_addr };
                 sockaddr.sin_port = proxy_port.to_be();
                 let ret = libc::connect(
-                    pfd, &sockaddr as *const _ as *const _,
+                    pfd.fd, &sockaddr as *const _ as *const _,
                     std::mem::size_of::<libc::sockaddr_in>() as u32
                 );
                 regs.rax = if ret == 0 { 0 } else {
@@ -75,28 +75,23 @@ impl SyscallHandler for ProxyHandler {
                     Err(PsocketError::SyscallFailed)?;
                 }
 
-                let flags = libc::fcntl(pfd, libc::F_GETFL, 0);
+                let flags = libc::fcntl(pfd.fd, libc::F_GETFL, 0);
                 if flags & libc::O_NONBLOCK != 0 {
-                    let ret = libc::fcntl(pfd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+                    let ret = libc::fcntl(pfd.fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
                     if ret != 0 {
                         Err(PsocketError::SyscallFailed)?;
                     }
                 }
 
-                let send_result = send_proxy_packets(pfd, orig_sockaddr);
+                let send_result = send_proxy_packets(pfd.fd, orig_sockaddr);
 
-                let ret = libc::fcntl(pfd, libc::F_SETFL, flags);
+                let ret = libc::fcntl(pfd.fd, libc::F_SETFL, flags);
                 if ret != 0 {
                     Err(PsocketError::SyscallFailed)?;
                 }
 
-                // TODO
                 send_result?;
-            },
-            // TODO
-            // libc::SYS_sendto => {
-            //     // dbg!(456);
-            // },
+            }
             _ => (),
         };
         Ok(())

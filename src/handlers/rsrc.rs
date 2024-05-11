@@ -1,72 +1,58 @@
 use std::{collections::HashMap, mem::size_of};
 use nix::unistd::Pid;
 use rand::rngs::ThreadRng;
-use anyhow::Result;
+use anyhow::{Ok, Result};
 
-use crate::{psocket::{Syscall, SyscallHandler}, utils::{random_address, PsocketError}, Config};
+use crate::{psocket::{Syscall, SyscallHandler, SyscallType}, utils::{get_fd, random_address, PsocketError}, Config};
 
 #[derive(Debug)]
 pub(crate) struct RsrcHandler {
     config: Config,
-    // pid, socket fd, pidfd socket fd
-    sockets: HashMap<Pid, HashMap<i32, i32>>,
     rng: ThreadRng,
-    socket_enter: bool,
-    close_enter: bool,
-    connect_enter: bool,
+    bound: HashMap<Pid, Vec<i32>>,
 }
 
 impl RsrcHandler {
     pub(crate) fn new(config: Config) -> RsrcHandler {
         RsrcHandler {
             config,
-            sockets: HashMap::new(),
             rng: rand::thread_rng(),
-            socket_enter: false,
-            close_enter: false,
-            connect_enter: false,
+            bound: HashMap::new(),
         }
-    }
-}
-
-impl RsrcHandler {
-    fn get_sockets(&mut self, pid: Pid) -> &mut HashMap<i32, i32> {
-        if !self.sockets.contains_key(&pid) {
-            self.sockets.insert(pid, HashMap::new());
-        }
-        self.sockets.get_mut(&pid).unwrap()
     }
 }
 
 impl SyscallHandler for RsrcHandler {
     unsafe fn handle(&mut self, &mut Syscall {
-        ref mut regs, orig_rax, ref socket_rax, rax, pid, ..
+        ty, ref mut regs, orig_rax, pid, ..
     }: &mut Syscall) -> Result<()> {
-        if self.config.cidr.is_none() { return Ok(()); }
         let cidr = match self.config.cidr {
             Some(cidr) => cidr,
             None => return Ok(()),
         };
-        let rdi = regs.rdi as i32;
         match orig_rax {
-            libc::SYS_socket => {
-                self.socket_enter = !self.socket_enter;
-                if self.socket_enter { return Ok(()); }
-                let pfd = socket_rax.as_ref().map_err(|_| PsocketError::SyscallFailed)?.fd;
-                if rdi == libc::AF_INET6 {
-                    self.get_sockets(pid).insert(rax, pfd);
+            libc::SYS_bind => {
+                if let SyscallType::Enter = ty {
+                    self.bound.entry(pid)
+                        .or_insert(Vec::new())
+                        .push(regs.rdi as i32);
                 }
             },
-            libc::SYS_close | libc::SYS_bind => {
-                self.close_enter = !self.close_enter;
-                if self.close_enter { return Ok(()); }
-                self.get_sockets(pid).remove(&rdi);
-            },
+            libc::SYS_close => {
+                if let SyscallType::Enter = ty {
+                    self.bound.entry(pid).and_modify(|bound| {
+                        bound.retain(|x| *x != regs.rdi as i32);
+                    });
+                }
+            }
             libc::SYS_connect => {
-                self.connect_enter = !self.connect_enter;
-                if !self.connect_enter { return Ok(()); }
-                let fd = self.get_sockets(pid).remove(&rdi);
-                if let Some(fd) = fd {
+                if let SyscallType::Exit = ty { return Ok(()); }
+                // skip bound sockets
+                let bound = self.bound.entry(pid).or_insert(Vec::new());
+                if bound.contains(&(regs.rdi as i32)) {
+                    return Ok(());
+                }
+                if let Result::Ok(pidfd) = get_fd(pid, regs.rdi as i32) {
                     let addr = libc::in6_addr {
                         s6_addr: random_address(&cidr, &mut self.rng).to_be_bytes(),
                     };
@@ -78,18 +64,19 @@ impl SyscallHandler for RsrcHandler {
                         sin6_scope_id: 0,
                     };
                     let ret = libc::bind(
-                        fd, sockaddr as *const libc::sockaddr,
+                        pidfd.fd, sockaddr as *const libc::sockaddr,
                         size_of::<libc::sockaddr_in6>() as u32
                     );
                     if ret == -1 { Err(PsocketError::SyscallFailed)?; }
+                    bound.push(regs.rdi as i32);
                 }
-            }
+            },
             _ => (),
         };
         Ok(())
     }
 
     fn process_exit(&mut self, pid: &Pid) {
-        self.sockets.remove(pid);
+        self.bound.remove(pid);
     }
 }

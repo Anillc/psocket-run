@@ -1,16 +1,12 @@
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use libc::user_regs_struct;
-use nix::errno::Errno;
 use nix::sys::signal::Signal;
-use nix::sys::wait::{wait, waitpid, WaitPidFlag, WaitStatus};
+use nix::sys::wait::{wait, WaitStatus};
 use nix::sys::ptrace;
 use nix::unistd::Pid;
-
-use once_cell::sync::Lazy;
 
 use anyhow::{Ok, Result};
 
@@ -18,7 +14,7 @@ use crate::handlers::clone::CloneHandler;
 use crate::handlers::fwmark::FwmarkHandler;
 use crate::handlers::proxy::ProxyHandler;
 use crate::handlers::rsrc::RsrcHandler;
-use crate::utils::{get_fd, PsocketError, Pidfd};
+use crate::utils::PsocketError;
 use crate::Config;
 
 #[derive(Debug)]
@@ -38,17 +34,12 @@ pub(crate) struct Syscall {
     pub(crate) pid: Pid,
     pub(crate) regs: user_regs_struct,
     pub(crate) orig_rax: i64,
-    pub(crate) rax: i32,
-    pub(crate) socket_rax: Lazy<Result<Pidfd>, Box<dyn FnOnce() -> Result<Pidfd>>>,
-    pub(crate) socket_rdi: Lazy<Result<Pidfd>, Box<dyn FnOnce() -> Result<Pidfd>>>,
 }
 
 pub(crate) trait SyscallHandler: Debug {
     unsafe fn handle(&mut self, syscall: &mut Syscall) -> Result<()>;
     fn process_exit(&mut self, pid: &Pid);
 }
-
-const WALL: Option<WaitPidFlag> = Some(WaitPidFlag::__WALL);
 
 impl Psocket {
 
@@ -66,14 +57,9 @@ impl Psocket {
 
     unsafe fn handle_syscall(&mut self, pid: Pid, ty: SyscallType) -> Result<()> {
         let regs = ptrace::getregs(pid)?;
-        let rax = regs.rax as i32;
-        let rdi = regs.rdi as i32;
         let mut syscall = Syscall {
-            ty, pid, regs, rax,
+            ty, pid, regs,
             orig_rax: regs.orig_rax as i64,
-            // TODO: get tgid
-            socket_rax: Lazy::new(Box::new(move || get_fd(pid, rax))),
-            socket_rdi: Lazy::new(Box::new(move || get_fd(pid, rdi))),
         };
         let results = self.handlers.iter_mut()
             .map(|handler| handler.handle(&mut syscall))
@@ -114,7 +100,12 @@ impl Psocket {
             match status {
                 WaitStatus::Stopped(pid, Signal::SIGTRAP | Signal::SIGSTOP) => ptrace::syscall(pid, None)?,
                 WaitStatus::Stopped(pid, sig) => ptrace::syscall(pid, sig)?,
-                WaitStatus::Exited(pid, _) => if pid == child { break; },
+                WaitStatus::Exited(pid, _) => {
+                    for handler in &mut self.handlers {
+                        handler.process_exit(&pid);
+                    }
+                    if pid == child { break; }
+                },
                 WaitStatus::PtraceEvent(pid, sig, _) => ptrace::syscall(pid, sig)?,
                 WaitStatus::Signaled(_, _, _) => break,
                 WaitStatus::Continued(_) | WaitStatus::StillAlive => (),
@@ -130,7 +121,7 @@ impl Psocket {
                             if self.config.verbose { dbg!(error); }
                         }
                     };
-                    ptrace::syscall(pid, None)?;
+                    ptrace::syscall(pid, None).ok();
                 },
             };
         }
